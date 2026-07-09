@@ -189,6 +189,11 @@
     font-size:12px;font-weight:600;cursor:pointer;color:var(--ink-soft);
   }
   .chip-filter.active{background:var(--teal);border-color:var(--teal);color:#fff;}
+  .name-btn{
+    border:1px solid var(--line);background:var(--surface);border-radius:100px;padding:8px 16px;
+    font-size:13.5px;font-weight:600;cursor:pointer;color:var(--ink);font-family:inherit;
+  }
+  .name-btn:hover{border-color:var(--teal);color:var(--teal-dark);background:var(--teal-tint);}
 
   /* modal */
   .overlay{
@@ -269,6 +274,20 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
 </head>
 <body>
+<div class="overlay" id="loginOverlay" style="z-index:300;">
+  <div class="modal" style="max-width:480px;text-align:center;">
+    <h2 style="margin-bottom:6px;">請選擇您是誰</h2>
+    <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:16px;">新增或修改送修案件時，需要標註是您操作的</div>
+    <div id="nameGrid" style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:16px;max-height:260px;overflow-y:auto;"></div>
+    <div class="field" style="text-align:left;">
+      <label>不在名單裡？輸入您的姓名</label>
+      <div style="display:flex;gap:8px;">
+        <input id="newNameInput" placeholder="輸入姓名" style="flex:1;">
+        <button class="btn btn-primary" id="btnNewNameConfirm">確定</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="app">
   <header class="top">
     <div class="title-block">
@@ -278,7 +297,10 @@
         <div class="sub">設備儀器送修管理系統・單位共用・即時同步</div>
       </div>
     </div>
-    <div class="sync-pill"><span class="dot"></span>資料為單位共用，所有成員可見與編輯</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;">
+      <div class="sync-pill"><span class="dot"></span>資料為單位共用，所有成員可見與編輯</div>
+      <div class="sync-pill" id="userBadge" style="cursor:pointer;background:var(--teal-tint);color:var(--teal-dark);display:none;" title="點擊切換操作者"></div>
+    </div>
   </header>
 
   <nav class="tabs">
@@ -407,7 +429,10 @@
     </div>
     <div class="field"><label>廠商名稱</label><input id="rcVendor" placeholder="外修填寫"></div>
     <div class="field"><label>維修進度說明</label><textarea id="rcProgress" placeholder="選填"></textarea></div>
-    <div class="field"><label>實際完工日</label><input type="date" id="rcCompletedDate"></div>
+    <div class="field-row">
+      <div class="field"><label>實際完工日</label><input type="date" id="rcCompletedDate"></div>
+      <div class="field"><label>簽收者（送回時確認收件人）</label><input id="rcReceiver" placeholder="設備修好送回時，由誰簽收"></div>
+    </div>
 
     <div class="field photo-section">
       <label>附加照片（故障 / 維修過程 / 完工照片）</label>
@@ -800,13 +825,20 @@ function renderBoard(){
   });
   board.querySelectorAll('.status-select').forEach(sel=>{
     sel.addEventListener('click', ev=>ev.stopPropagation());
-    sel.addEventListener('change', async (ev)=>{
+    sel.addEventListener('change', (ev)=>{
       ev.stopPropagation();
-      const r = repairs.find(x=>x.id===sel.dataset.id);
-      r.status = sel.value;
-      await saveRepairList();
-      renderBoard(); renderEquipment();
-      toast('狀態已更新為「'+r.status+'」');
+      const newVal = sel.value;
+      ensureUser(async ()=>{
+        const r = repairs.find(x=>x.id===sel.dataset.id);
+        r.status = newVal;
+        if(r.status==='已完成' && !r.receiver && currentUser){
+          r.receiver = currentUser;
+        }
+        r.lastEditedBy = currentUser || r.lastEditedBy || '';
+        await saveRepairList();
+        renderBoard(); renderEquipment();
+        toast('狀態已更新為「'+r.status+'」');
+      });
     });
   });
 }
@@ -854,11 +886,12 @@ async function openRepairModal(id){
     document.getElementById('rcVendor').value = r.vendor||'';
     document.getElementById('rcProgress').value = r.progress||'';
     document.getElementById('rcCompletedDate').value = r.completedDate||'';
+    document.getElementById('rcReceiver').value = r.receiver||'';
     document.getElementById('rcStatus').value = (r.status==='待送修'?'維修中':r.status)||'維修中';
     currentPhotos = await loadPhotos(id);
   }else{
     document.getElementById('rcModalTitle').textContent = '新增送修申請';
-    ['rcEquipmentName','rcAsset','rcApplicant','rcPhone','rcFault','rcAssignee','rcExpectedDate','rcVendor','rcProgress','rcCompletedDate'].forEach(f=>document.getElementById(f).value='');
+    ['rcEquipmentName','rcAsset','rcApplicant','rcPhone','rcFault','rcAssignee','rcExpectedDate','rcVendor','rcProgress','rcCompletedDate','rcReceiver'].forEach(f=>document.getElementById(f).value='');
     document.getElementById('rcType').value = '內修';
     document.getElementById('rcStatus').value = '維修中';
     document.getElementById('rcApplyDate').value = new Date().toISOString().slice(0,10);
@@ -867,7 +900,8 @@ async function openRepairModal(id){
   document.getElementById('rcOverlay').classList.add('active');
 }
 
-document.getElementById('btnSaveRepair').addEventListener('click', async ()=>{
+document.getElementById('btnSaveRepair').addEventListener('click', ()=>{
+  ensureUser(async ()=>{
   const name = document.getElementById('rcEquipmentName').value.trim();
   if(!name){ toast('請輸入設備名稱'); return; }
   const id = document.getElementById('rcId').value || uid('rc_');
@@ -885,9 +919,14 @@ document.getElementById('btnSaveRepair').addEventListener('click', async ()=>{
     vendor: document.getElementById('rcVendor').value.trim(),
     progress: document.getElementById('rcProgress').value.trim(),
     completedDate: document.getElementById('rcCompletedDate').value,
+    receiver: document.getElementById('rcReceiver').value.trim(),
     status: document.getElementById('rcStatus').value,
     photoCount: currentPhotos.length,
+    lastEditedBy: currentUser || '',
   };
+  if(data.status==='已完成' && !data.receiver && currentUser){
+    data.receiver = currentUser; // 預設由目前操作者簽收，可自行修改
+  }
   const existingIdx = repairs.findIndex(r=>r.id===id);
   if(existingIdx>=0) repairs[existingIdx] = data; else repairs.push(data);
   await saveRepairList();
@@ -895,9 +934,11 @@ document.getElementById('btnSaveRepair').addEventListener('click', async ()=>{
   document.getElementById('rcOverlay').classList.remove('active');
   renderBoard(); renderEquipment(); renderReport();
   toast('已儲存');
+  });
 });
 
-document.getElementById('btnDeleteRepair').addEventListener('click', async ()=>{
+document.getElementById('btnDeleteRepair').addEventListener('click', ()=>{
+  ensureUser(async ()=>{
   if(!confirm('確定要刪除這筆送修案件？')) return;
   const id = document.getElementById('rcId').value;
   repairs = repairs.filter(r=>r.id!==id);
@@ -907,6 +948,7 @@ document.getElementById('btnDeleteRepair').addEventListener('click', async ()=>{
   document.getElementById('rcOverlay').classList.remove('active');
   renderBoard(); renderEquipment(); renderReport();
   toast('已刪除');
+  });
 });
 
 /* close modals */
@@ -1031,7 +1073,7 @@ function renderReport(){
     .sort((a,b)=>(b.applyDate||'').localeCompare(a.applyDate||''));
   const table = document.getElementById('histTable');
   table.innerHTML = `<thead><tr>
-      <th>設備名稱</th><th>財產編號</th><th>申請人</th><th>請修日期</th><th>狀態</th><th>內外修</th><th>廠商</th><th>完工日</th><th>照片</th>
+      <th>設備名稱</th><th>財產編號</th><th>申請人</th><th>請修日期</th><th>狀態</th><th>內外修</th><th>廠商</th><th>完工日</th><th>簽收者</th><th>照片</th>
     </tr></thead><tbody>
     ${rows.map(r=>`<tr>
       <td>${escapeHtml(r.equipmentName)}</td>
@@ -1042,11 +1084,88 @@ function renderReport(){
       <td>${escapeHtml(r.repairType||'—')}</td>
       <td>${escapeHtml(r.vendor||'—')}</td>
       <td>${escapeHtml(r.completedDate||'—')}</td>
+      <td>${escapeHtml(r.receiver||'—')}</td>
       <td>${r.photoCount||0}</td>
-    </tr>`).join('') || `<tr><td colspan="9" style="text-align:center;color:var(--ink-soft);padding:24px;">尚無資料</td></tr>`}
+    </tr>`).join('') || `<tr><td colspan="10" style="text-align:center;color:var(--ink-soft);padding:24px;">尚無資料</td></tr>`}
     </tbody>`;
 }
 
+/* ---------- 登入（選擇操作者：只有在「新增/修改送修案件」時才會跳出來要求輸入） ---------- */
+let currentUser = null;
+try{ currentUser = localStorage.getItem('currentUserName') || null; }catch(e){ currentUser = null; }
+let pendingAction = null; // 選完名字後要繼續執行的動作
+
+function getStaffNames(){
+  const names = new Set();
+  (SEED_DATA.repairs||[]).forEach(r=>{
+    if(r.applicant) names.add(r.applicant);
+    if(r.assignee && !/^主任|^\d/.test(r.assignee)) names.add(r.assignee);
+  });
+  return Array.from(names).sort((a,b)=>a.localeCompare(b,'zh-Hant'));
+}
+
+function renderNameGrid(){
+  const grid = document.getElementById('nameGrid');
+  const names = getStaffNames();
+  grid.innerHTML = names.map(n=>`<button class="name-btn" data-name="${escapeHtml(n)}">${escapeHtml(n)}</button>`).join('');
+  grid.querySelectorAll('[data-name]').forEach(b=>{
+    b.addEventListener('click', ()=>selectUser(b.dataset.name));
+  });
+}
+
+function selectUser(name){
+  name = (name||'').trim();
+  if(!name) return;
+  currentUser = name;
+  try{ localStorage.setItem('currentUserName', name); }catch(e){}
+  document.getElementById('loginOverlay').classList.remove('active');
+  updateUserBadge();
+  if(pendingAction){
+    const fn = pendingAction;
+    pendingAction = null;
+    fn();
+  }
+}
+
+function switchUser(){
+  try{ localStorage.removeItem('currentUserName'); }catch(e){}
+  currentUser = null;
+  updateUserBadge();
+}
+
+function updateUserBadge(){
+  const badge = document.getElementById('userBadge');
+  if(currentUser){
+    badge.style.display = 'inline-flex';
+    badge.innerHTML = `👤 操作者：${escapeHtml(currentUser)}（點擊切換）`;
+  }else{
+    badge.style.display = 'none';
+  }
+}
+
+// 需要標註操作者的動作（新增/編輯送修案件、切換狀態）呼叫這個函式包住即可：
+// 如果還沒選過名字，會先跳出選人畫面，選完才會繼續執行 fn()
+function ensureUser(fn){
+  if(currentUser){ fn(); return; }
+  pendingAction = fn;
+  renderNameGrid();
+  document.getElementById('loginOverlay').classList.add('active');
+}
+
+document.getElementById('btnNewNameConfirm').addEventListener('click', ()=>{
+  const v = document.getElementById('newNameInput').value;
+  selectUser(v);
+  document.getElementById('newNameInput').value = '';
+});
+document.getElementById('newNameInput').addEventListener('keydown', (e)=>{
+  if(e.key==='Enter'){ document.getElementById('btnNewNameConfirm').click(); }
+});
+document.getElementById('userBadge').addEventListener('click', switchUser);
+document.querySelector('#loginOverlay [data-close]')?.addEventListener('click', ()=>{
+  document.getElementById('loginOverlay').classList.remove('active');
+});
+
+updateUserBadge();
 loadAll();
 </script>
 </body>
